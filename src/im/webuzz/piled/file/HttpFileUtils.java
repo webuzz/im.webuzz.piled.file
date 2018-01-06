@@ -34,24 +34,35 @@ public class HttpFileUtils {
 		
 		String baseLocalPath = null;
 		String host = req.host;
-        String serverBase = HttpFileConfig.serverBase;
-		if (host != null && host.length() > 0
-                && new File(serverBase + "/" + host).exists()) {
-            baseLocalPath = serverBase + "/" + host;
-        } else {
-            baseLocalPath = serverBase + "/www";
-        }
-        File file = new File(baseLocalPath + "/404.html");
-        if (!file.exists()) {
-        	file = null;
-        	String page404 = HttpFileConfig.page404;
+		if (HttpRequest.isMaliciousHost(host)) {
+			host = null; // Bad request
+		}
+		String serverBase = HttpFileConfig.serverBase;
+		if (host != null && host.length() > 0) {
+			String hostPath = serverBase + "/" + host;
+			if (new File(hostPath).exists()) {
+				baseLocalPath = hostPath;
+			} else if (host.startsWith("www.")) {
+				String domainPath = serverBase + "/" + host.substring(4);
+				if (new File(domainPath).exists()) {
+					baseLocalPath = domainPath;
+				}
+			}
+		}
+		if (baseLocalPath == null) {
+			baseLocalPath = serverBase + "/www";
+		}
+		File file = new File(baseLocalPath + "/404.html");
+		if (!file.exists()) {
+			file = null;
+			String page404 = HttpFileConfig.page404;
 			if (page404 != null && page404.length() > 0) {
-        		file = new File(page404);
-        		if (!file.exists()) {
-        			file = null;
-        		}
-        	}
-        }
+				file = new File(page404);
+				if (!file.exists()) {
+					file = null;
+				}
+			}
+		}
 
 		if (file != null) {
 			serveFile(req, resp, file, responseBuilder);
@@ -89,7 +100,7 @@ public class HttpFileUtils {
 			//*/
 		}
 		//*
-		if (req.lastModifiedSince > 0 && file.lastModified() <= req.lastModifiedSince + 1000) { // 1 second delta
+		if (req.lastModifiedSince > 0 && Math.abs(file.lastModified() - req.lastModifiedSince) <= 1000) { // 1 second delta
 			if (req.rangeBeginning >= 0 || req.rangeEnding >= 0) {
 				// Google Chrome may come up with If-Modified-Since header and Range:bytes=0-0
 				if (req.rangeBeginning == 0 && file.length() == req.rangeEnding - req.rangeBeginning + 1) {
@@ -495,14 +506,14 @@ public class HttpFileUtils {
 			responseBuilder.append("\r\n");
 			if (!HttpWorkerUtils.checkContentLength(req, resp, fileSize, responseBuilder)) {
 				responseBuilder.append("\r\n");
-				System.out.println(responseBuilder.toString());
+				//System.out.println(responseBuilder.toString());
 				byte[] data = responseBuilder.toString().getBytes();
 				req.sending = data.length;
 				if (resp.worker != null) resp.worker.getServer().send(resp.socket, data);
 				return;
 			}
 			responseBuilder.append("\r\n");
-			System.out.println(responseBuilder.toString());
+			//System.out.println(responseBuilder.toString());
 			byte[] data = responseBuilder.toString().getBytes();
 			//*
 			int headerLength = data.length;
@@ -566,16 +577,23 @@ public class HttpFileUtils {
 		if (serverBase == null || serverBase.length() == 0) {
 			return null;
 		}
-		File file = null;
 		if (HttpRequest.isMaliciousHost(host)) {
 			host = null; // Bad request
 		}
 		url = HttpRequest.fixURL(url);
-		if (host != null && host.length() > 0
-				&& new File(serverBase + "/" + host).exists()) {
-			file = new File(serverBase + "/" + host + url);
-		} else {
-			// folder www is for all hosts without a host folder
+		File file = null;
+		if (host != null && host.length() > 0) {
+			File hostFile = new File(serverBase + "/" + host + url);
+			if (hostFile.exists()) {
+				file = hostFile;
+			} else if (host.startsWith("www.")) {
+				File domainFile = new File(serverBase + "/" + host.substring(4) + url);
+				if (domainFile.exists()) {
+					file = domainFile;
+				}
+			}
+		}
+		if (file == null) {
 			file = new File(serverBase + "/www" + url);
 		}
 		return file;

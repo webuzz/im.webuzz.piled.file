@@ -46,10 +46,27 @@ public class StaticResourcePilet implements IPilet {
 		if (file == null) {
 			return false;
 		}
-		if (file.isDirectory()) { // redirect to URL ending with "/" for existed folder
-			HttpWorkerUtils.redirect("http://" + req.host + req.url + "/", req, resp);
+		if (file.isDirectory()) {
+			String pageIndex = HttpFileConfig.pageIndex;
+			File indexFile = new File(file, ((pageIndex == null || pageIndex.length() == 0) ? "index.html" : pageIndex)); // we use index.html as the default index file.
+			if (indexFile.exists() && indexFile.isFile()) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, indexFile, 0);
+				HttpLoggingUtils.addLogging(req.host, req, retCode, retCode == 304 ? 0 : indexFile.length());
+				return true;
+			}
+			File htmlFile = new File(file.getAbsolutePath() + ".html"); // we use ###.html as the default index file.
+			if (htmlFile.exists() && htmlFile.isFile()) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, htmlFile, 0);
+				HttpLoggingUtils.addLogging(req.host, req, retCode, retCode == 304 ? 0 : htmlFile.length());
+				return true;
+			}
+			/*
+			// redirect to URL ending with "/" for existed folder
+			HttpWorkerUtils.redirect((resp.worker.getServer().isSSLEnabled() ? "https://" : "http://") + req.host + req.url + "/", req, resp);
 			HttpLoggingUtils.addLogging(req.host, req, 301, 0);
 			return true;
+			*/
+			return false;
 		}
 		if (file.exists()) {
 			int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
@@ -77,7 +94,7 @@ public class StaticResourcePilet implements IPilet {
 				}
 				if (file.exists() && file.isFile()) {
 					// try file .../folder/hello for URL .../folder/hello/
-					HttpWorkerUtils.redirect("http://" + req.host + url, req, resp);
+					HttpWorkerUtils.redirect((resp.worker.getServer().isSSLEnabled() ? "https://" : "http://") + req.host + url, req, resp);
 					HttpLoggingUtils.addLogging(req.host, req, 301, 0);
 					return true;
 				}

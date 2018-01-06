@@ -27,7 +27,7 @@ public class HttpFileConfig {
 	/*
 	 * Configurations for serving large file.
 	 * 
-	 * Piled server is not optimized for serving large file. We recomend
+	 * Piled server is not optimized for serving large file. We recommend
 	 * using other HTTP server, like Apache httpd, for serving large file.
 	 * 
 	 * The following configurations are here for protecting server from
