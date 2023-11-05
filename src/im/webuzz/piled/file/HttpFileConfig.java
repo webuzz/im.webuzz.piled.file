@@ -50,4 +50,9 @@ public class HttpFileConfig {
 	 * Configurations for server large file end.
 	 */
 	
+	/**
+	 * If resources are in non-expiring folders, return 5 years Expires header
+	 */
+	public static String[] nonExpiringFolders = null;
+	
 }

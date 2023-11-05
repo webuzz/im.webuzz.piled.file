@@ -1,109 +1,226 @@
 package im.webuzz.piled.file;
 
-import im.webuzz.pilet.HttpConfig;
-import im.webuzz.pilet.HttpRequest;
-import im.webuzz.pilet.HttpResponse;
-import im.webuzz.pilet.HttpWorkerUtils;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 
-public class HttpFileUtils {
+import im.webuzz.pilet.HttpConfig;
+import im.webuzz.pilet.HttpLoggingUtils;
+import im.webuzz.pilet.HttpRequest;
+import im.webuzz.pilet.HttpResponse;
+import im.webuzz.pilet.HttpWorkerUtils;
+
+public class ZipResourcePilet extends StaticResourcePilet {
+	@Override
+	public boolean service(HttpRequest req, HttpResponse resp) {
+		String serverBase = HttpFileConfig.serverBase;
+		if (serverBase == null || serverBase.length() == 0) {
+			// If serverBase is not set, this server will disable serving static resource.
+			return false;
+		}
+		if (serviceRawResource(serverBase, req, resp, false)) {
+			return true;
+		}
+		if (serviceRawResource(serverBase, req, resp, true)) {
+			return true;
+		}
+		if (HttpFileConfig.page404 != null) {
+			HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+			return true;
+		}
+		return false;
+	}
+
+
+	public static File getZipFileByURL(String serverBase, String host, String url) {
+		if (serverBase == null || serverBase.length() == 0) {
+			return null;
+		}
+		if (HttpRequest.isMaliciousHost(host)) {
+			host = null; // Bad request
+		}
+		url = HttpRequest.fixURL(url);
+		String zipURL = url.substring(0, url.lastIndexOf('/')) + ".zip";
+		File file = null;
+		if (host != null && host.length() > 0) {
+			File hostFile = new File(serverBase + "/" + host + zipURL);
+			if (hostFile.exists()) {
+				file = hostFile;
+			} else if (host.startsWith("www.")) {
+				File domainFile = new File(serverBase + "/" + host.substring(4) + zipURL);
+				if (domainFile.exists()) {
+					file = domainFile;
+				}
+			}
+		}
+		if (file == null) {
+			file = new File(serverBase + "/www" + zipURL);
+		}
+		return file;
+	}
+
+	/*
+	 * Make method public static so other pilets can invoke this to service static resource files. 
+	 */
+	static boolean serviceRawResource(String serverBase, HttpRequest req, HttpResponse resp, boolean checkZipFile) {
+		String url = req.url;
+		if (url.endsWith("/")) {
+			String pageIndex = HttpFileConfig.pageIndex;
+			url = url + ((pageIndex == null || pageIndex.length() == 0) ? "index.html" : pageIndex); // we use index.html as the default index file.
+		}
+		File file = checkZipFile ? getZipFileByURL(serverBase, req.host, url) : HttpFileUtils.getFileByURL(serverBase, req.host, url);
+		if (file == null) {
+			return false;
+		}
+		if (!checkZipFile && file.isDirectory()) {
+			String pageIndex = HttpFileConfig.pageIndex;
+			File indexFile = new File(file, ((pageIndex == null || pageIndex.length() == 0) ? "index.html" : pageIndex)); // we use index.html as the default index file.
+			if (indexFile.exists() && indexFile.isFile()) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, indexFile, 0);
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : indexFile.length());
+				return true;
+			}
+			File htmlFile = new File(file.getAbsolutePath() + ".html"); // we use ###.html as the default index file.
+			if (htmlFile.exists() && htmlFile.isFile()) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, htmlFile, 0);
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : htmlFile.length());
+				return true;
+			}
+			/*
+			// redirect to URL ending with "/" for existed folder
+			HttpWorkerUtils.redirect((resp.worker.getServer().isSSLEnabled() ? "https://" : "http://") + req.host + req.url + "/", req, resp);
+			HttpLoggingUtils.addLogging(req.host, req, 301, 0);
+			return true;
+			*/
+			return false;
+		}
+		if (file.exists()) {
+			if (!checkZipFile) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : file.length());
+				return true;
+			}
+			// zip file
+			ZipFile zipFile = null;
+			try {
+				zipFile = new ZipFile(file);
+				String fileName = url.substring(url.lastIndexOf('/') + 1);
+				if (fileName.length() == 0) {
+					fileName = "index.html";
+				}
+				ZipEntry entry = zipFile.getEntry(fileName);
+				if (entry == null) {
+					int idx = req.url.lastIndexOf('/');
+					if (idx != -1) {
+						String name = req.url.substring(idx + 1);
+						int dotIndex = name.lastIndexOf('.');
+						if (dotIndex != -1) {
+							String ext = name.substring(dotIndex + 1);
+							if ("html".equalsIgnoreCase(ext) || "htm".equalsIgnoreCase(ext)) {
+								return false; // 404
+							}
+						}
+					}
+					fileName += ".html";
+					entry = zipFile.getEntry(fileName);
+				}
+				if (entry == null) {
+					return false;
+				}
+				int retCode = serveZipResource(req, resp, zipFile, entry, 0);
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : file.length());
+				return true;
+			} catch (ZipException e) {
+				e.printStackTrace();
+				return false;
+			} catch (IOException e) {
+				e.printStackTrace();
+				return false;
+			} finally {
+				if (zipFile != null) {
+					try {
+						zipFile.close();
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
+				}
+			}
+		} else if (req.url.endsWith("/")) {
+			if (req.url.length() <= 1) { // server base folder may not exist
+				return false;
+			}
+			// for URL .../folder/hello/, if there is no .../folder/hello/index.html, try .../folder/hello.html
+			url = req.url.substring(0, req.url.length() - 1) + ".html";
+			file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
+			if (file == null) {
+				return false;
+			}
+			if (file.exists() && file.isFile()) {
+				int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, file.length());
+				return true;
+			} else {
+				url = req.url.substring(0, req.url.length() - 1);
+				file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
+				if (file == null) {
+					return false;
+				}
+				if (file.exists() && file.isFile()) {
+					// try file .../folder/hello for URL .../folder/hello/
+					HttpWorkerUtils.redirect((resp.worker.getServer().isSSLEnabled() ? "https://" : "http://") + req.host + url, req, resp);
+					HttpLoggingUtils.addLogging(req.host, req, resp, null, 301, 0);
+					return true;
+				}
+			}
+		} else {
+			int idx = req.url.lastIndexOf('/');
+			if (idx != -1) {
+				String name = req.url.substring(idx + 1);
+				int dotIndex = name.lastIndexOf('.');
+				if (dotIndex != -1) {
+					String ext = name.substring(dotIndex + 1);
+					if ("html".equalsIgnoreCase(ext) || "htm".equalsIgnoreCase(ext)) {
+						return false; // 404
+					}
+				}
+				// URL .../folder/hello will be serving file .../folder/hello.html
+				// Considering be compatible with Apache httpd
+				url = req.url + ".html";
+				file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
+				if (file == null) {
+					return false;
+				}
+				if (file.exists() && file.isFile()) {
+					int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
+					HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, file.length());
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	
 	private static Object sharedFileMutex = new Object();
 	private static Map<String, HttpSharedFile> sharedFileMap = new ConcurrentHashMap<String, HttpSharedFile>();
 
-	public static void send404NotFoundWithTemplate(final HttpRequest req, final HttpResponse resp) {
-		StringBuilder responseBuilder = new StringBuilder(256);
-		responseBuilder.append("HTTP/1.");
-		responseBuilder.append(req.v11 ? '1' : '0');
-		responseBuilder.append(" 404 Not Found\r\n");
-		String serverName = HttpConfig.serverSignature;
-		if (req.requestCount < 1 && serverName != null && serverName.length() > 0) {
-			responseBuilder.append("Server: ").append(serverName).append("\r\n");
-		}
-		boolean closeSocket = HttpWorkerUtils.checkKeepAliveHeader(req, responseBuilder, resp.worker.getServer().isSSLEnabled());
-		
-		String baseLocalPath = null;
-		String host = req.host;
-		if (HttpRequest.isMaliciousHost(host)) {
-			host = null; // Bad request
-		}
-		String serverBase = HttpFileConfig.serverBase;
-		if (host != null && host.length() > 0) {
-			String hostPath = serverBase + "/" + host;
-			if (new File(hostPath).exists()) {
-				baseLocalPath = hostPath;
-			} else if (host.startsWith("www.")) {
-				String domainPath = serverBase + "/" + host.substring(4);
-				if (new File(domainPath).exists()) {
-					baseLocalPath = domainPath;
-				}
-			}
-		}
-		if (baseLocalPath == null) {
-			baseLocalPath = serverBase + "/www";
-		}
-		File file = new File(baseLocalPath + "/404.html");
-		if (!file.exists()) {
-			file = null;
-			String page404 = HttpFileConfig.page404;
-			if (page404 != null && page404.length() > 0) {
-				file = new File(page404);
-				if (!file.exists()) {
-					file = null;
-				}
-			}
-		}
-
-		if (file != null) {
-			serveFile(req, resp, file, responseBuilder);
-		} else {
-			responseBuilder.append("Content-Length: 0\r\n\r\n");
-			byte[] data = responseBuilder.toString().getBytes();
-			req.sending = data.length;
-			resp.worker.getServer().send(resp.socket, data);
-		}
-		
-		if (closeSocket) {
-			resp.worker.poolingRequest(resp.socket, req);
-		}
-	}
-	
-	public static int serveStaticResource(final HttpRequest req,
-			final HttpResponse resp, File file, long expired) {
-		if (req.url.indexOf("../") != -1 || file.isDirectory() || !file.exists()) {
-			// Normal browsers or normal clients should calculate to remove "..",
-			// Or we think it is a hacking URL!
-			HttpWorkerUtils.send404NotFound(req, resp);
-			return 404;
-			/*
-			try {
-				String path = file.getCanonicalPath();
-				if (!path.startsWith(HttpConfig.serverBase)) {
-					send404NotFound(req, de, closeSockets);
-					return 404;
-				}
-			} catch (IOException e1) {
-				e1.printStackTrace();
-				send404NotFound(req, de, closeSockets);
-				return 404;
-			}
-			//*/
-		}
+	public static int serveZipResource(final HttpRequest req,
+			final HttpResponse resp, ZipFile zipFile, ZipEntry file, long expired) {
 		//*
-		if (req.lastModifiedSince > 0 && Math.abs(file.lastModified() - req.lastModifiedSince) <= 1000) { // 1 second delta
+		if (req.lastModifiedSince > 0 && Math.abs(file.getTime() - req.lastModifiedSince) <= 1000) { // 1 second delta
 			if (req.rangeBeginning >= 0 || req.rangeEnding >= 0) {
 				// Google Chrome may come up with If-Modified-Since header and Range:bytes=0-0
-				if (req.rangeBeginning == 0 && file.length() == req.rangeEnding - req.rangeBeginning + 1) {
+				if (req.rangeBeginning == 0 && file.getSize() == req.rangeEnding - req.rangeBeginning + 1) {
 					HttpWorkerUtils.send304NotModified(req, resp);
 					return 304;
 				}
@@ -122,39 +239,19 @@ public class HttpFileUtils {
 		if (req.requestCount < 1 && serverName != null && serverName.length() > 0) {
 			responseBuilder.append("Server: ").append(serverName).append("\r\n");
 		}
-		boolean closeSocket = HttpWorkerUtils.checkKeepAliveHeader(req, responseBuilder, resp.worker.getServer().isSSLEnabled());
-		if (expired != 0) { // expired > 0 || expired == -1
+		boolean closeSocket = HttpWorkerUtils.checkKeepAliveHeader(req, responseBuilder);
+		if (expired > 0) {
 			responseBuilder.append("Expires: ");
 			responseBuilder.append(HttpWorkerUtils.getStaticResourceExpiredDate(expired));
 			responseBuilder.append("\r\n");
 		} else {
-			boolean nonExpiring = false;
-			String[] nonExpiringPrefixes = HttpFileConfig.nonExpiringFolders;
-			if (nonExpiringPrefixes != null && nonExpiringPrefixes.length > 0) {
-				for (int i = 0; i < nonExpiringPrefixes.length; i++) {
-					String prefix = nonExpiringPrefixes[i];
-					if (prefix != null && prefix.length() > 0) {
-						if (req.url.startsWith(prefix)) {
-							nonExpiring = true;
-							break;
-						}
-					}
-				}
-			}
-			if (nonExpiring) {
-				responseBuilder.append("Expires: ");
-				responseBuilder.append(HttpWorkerUtils.getStaticResourceExpiredDate(-1));
-				responseBuilder.append("\r\n");
-				responseBuilder.append("Cache-Control: max-age=157680000\r\n"); //  5L * 365 * 24 * 3600
-			} else {
-				responseBuilder.append("Cache-Control: max-age=0\r\n");
-			}
+			responseBuilder.append("Cache-Control: max-age=0\r\n");
 		}
 		responseBuilder.append("Date: ").append(HttpWorkerUtils.getHTTPDateString(System.currentTimeMillis()));
-		responseBuilder.append("\r\nLast-Modified: ").append(HttpWorkerUtils.getHTTPDateString(file.lastModified()));
+		responseBuilder.append("\r\nLast-Modified: ").append(HttpWorkerUtils.getHTTPDateString(file.getTime()));
 		responseBuilder.append("\r\n");
 
-		serveFile(req, resp, file, responseBuilder);
+		serveZipFile(req, resp, zipFile, file, responseBuilder);
 		if (closeSocket) {
 			resp.worker.poolingRequest(resp.socket, req);
 		}
@@ -162,13 +259,9 @@ public class HttpFileUtils {
 	}
 
 	
-	private static void serveFile(final HttpRequest req,
-			final HttpResponse resp, File file, StringBuilder responseBuilder) {
+	private static void serveZipFile(final HttpRequest req,
+			final HttpResponse resp, ZipFile zipFile, ZipEntry file, StringBuilder responseBuilder) {
 		String name = file.getName();
-		int queryIdx = name.indexOf('?');
-		if (queryIdx != -1) {
-			name = name.substring(0, queryIdx);
-		}
 		String extName = name;
 		int idx = name.lastIndexOf('.');
 		if (idx != -1) {
@@ -180,17 +273,12 @@ public class HttpFileUtils {
 		} else {
 			req.supportGZip = false; // donot support other types beside html/css/javascript
 		}
-		int fileSize = (int) file.length(); // We do not support large file
+		int fileSize = (int) file.getSize(); // We do not support large file
 		boolean toGZip = fileSize > HttpConfig.gzipStartingSize && req.supportGZip && contentType.startsWith("text/") && HttpWorkerUtils.isUserAgentSupportGZip(req.userAgent) && fileSize < HttpFileConfig.maxSingleResponse;
 		boolean needCompressing = false;
 		if (toGZip) {
-			File gzFile = new File(file.getAbsolutePath() + ".gz");
-			if (gzFile.exists() && gzFile.lastModified() > file.lastModified()) {
-				file = gzFile;
-			} else {
-				toGZip = false; // doesn't exist ...
-				needCompressing = true;
-			}
+			toGZip = false; // doesn't exist ...
+			needCompressing = true;
 		}
 		
 		if (toGZip || needCompressing) {
@@ -232,9 +320,9 @@ public class HttpFileUtils {
 				resp.worker.getServer().send(resp.socket, data);
 				
 				int alreadySent = 0;
-				FileInputStream fis = null;
+				InputStream fis = null;
 				try {
-					fis = new FileInputStream(file);
+					fis = zipFile.getInputStream(file);
 					if (req.rangeBeginning > 0) {
 						long skipped = fis.skip(req.rangeBeginning);
 						while (skipped > 0 && skipped < req.rangeBeginning) {
@@ -300,7 +388,7 @@ public class HttpFileUtils {
 				int offset = data.length;
 				System.arraycopy(data, 0, buf, 0, offset);
 				
-				String filePath = file.getAbsolutePath();
+				String filePath = req.url;
 				HttpSharedFile attachedFileObj = null;
 				HttpSharedFile mainFileObj = new HttpSharedFile();
 				mainFileObj.mutex = new Object();
@@ -355,9 +443,9 @@ public class HttpFileUtils {
 						}
 					}
 				}
-				FileInputStream fis = null;
+				InputStream fis = null;
 				try {
-					fis = new FileInputStream(file);
+					fis = zipFile.getInputStream(file);
 					while ((read = fis.read(buf, offset, Math.min(bufferLength - offset, 8096))) > 0) {
 						offset += read;
 						if (offset >= bufferLength) {
@@ -411,7 +499,7 @@ public class HttpFileUtils {
 		} else {
 			byte[] gzippedBytes = null;
 			
-			String filePath = file.getAbsolutePath() + ".gz";
+			String filePath = req.url + ".gz";
 			HttpSharedFile attachedFileObj = null;
 			HttpSharedFile mainFileObj = new HttpSharedFile();
 			mainFileObj.mutex = new Object();
@@ -469,10 +557,10 @@ public class HttpFileUtils {
 				byte[] buf = new byte[8096];
 				int read = -1;
 				int count = 0;
-				FileInputStream fis = null;
+				InputStream fis = null;
 				try {
 					gZipOut = new GZIPOutputStream(out);
-					fis = new FileInputStream(file);
+					fis = zipFile.getInputStream(file);
 					while ((read = fis.read(buf, 0, fileSize - count > 8096 ? 8096 : fileSize - count)) != -1) {
 						count += read;
 						gZipOut.write(buf, 0, read);
@@ -591,32 +679,6 @@ public class HttpFileUtils {
 			}
 			//*/
 		}
-	}
-
-	public static File getFileByURL(String serverBase, String host, String url) {
-		if (serverBase == null || serverBase.length() == 0) {
-			return null;
-		}
-		if (HttpRequest.isMaliciousHost(host)) {
-			host = null; // Bad request
-		}
-		url = HttpRequest.fixURL(url);
-		File file = null;
-		if (host != null && host.length() > 0) {
-			File hostFile = new File(serverBase + "/" + host + url);
-			if (hostFile.exists()) {
-				file = hostFile;
-			} else if (host.startsWith("www.")) {
-				File domainFile = new File(serverBase + "/" + host.substring(4) + url);
-				if (domainFile.exists()) {
-					file = domainFile;
-				}
-			}
-		}
-		if (file == null) {
-			file = new File(serverBase + "/www" + url);
-		}
-		return file;
 	}
 
 }

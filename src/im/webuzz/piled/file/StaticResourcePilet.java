@@ -44,6 +44,10 @@ public class StaticResourcePilet implements IPilet {
 		}
 		File file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
 		if (file == null) {
+			if (HttpFileConfig.page404 != null) {
+				HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+				return true;
+			}
 			return false;
 		}
 		if (file.isDirectory()) {
@@ -51,13 +55,13 @@ public class StaticResourcePilet implements IPilet {
 			File indexFile = new File(file, ((pageIndex == null || pageIndex.length() == 0) ? "index.html" : pageIndex)); // we use index.html as the default index file.
 			if (indexFile.exists() && indexFile.isFile()) {
 				int retCode = HttpFileUtils.serveStaticResource(req, resp, indexFile, 0);
-				HttpLoggingUtils.addLogging(req.host, req, retCode, retCode == 304 ? 0 : indexFile.length());
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : indexFile.length());
 				return true;
 			}
 			File htmlFile = new File(file.getAbsolutePath() + ".html"); // we use ###.html as the default index file.
 			if (htmlFile.exists() && htmlFile.isFile()) {
 				int retCode = HttpFileUtils.serveStaticResource(req, resp, htmlFile, 0);
-				HttpLoggingUtils.addLogging(req.host, req, retCode, retCode == 304 ? 0 : htmlFile.length());
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : htmlFile.length());
 				return true;
 			}
 			/*
@@ -66,36 +70,52 @@ public class StaticResourcePilet implements IPilet {
 			HttpLoggingUtils.addLogging(req.host, req, 301, 0);
 			return true;
 			*/
+			if (HttpFileConfig.page404 != null) {
+				HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+				return true;
+			}
 			return false;
 		}
 		if (file.exists()) {
 			int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
-			HttpLoggingUtils.addLogging(req.host, req, retCode, retCode == 304 ? 0 : file.length());
+			HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, retCode == 304 ? 0 : file.length());
 			return true;
 		} else if (req.url.endsWith("/")) {
 			if (req.url.length() <= 1) { // server base folder may not exist
+				if (HttpFileConfig.page404 != null) {
+					HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+					return true;
+				}
 				return false;
 			}
 			// for URL .../folder/hello/, if there is no .../folder/hello/index.html, try .../folder/hello.html
 			url = req.url.substring(0, req.url.length() - 1) + ".html";
 			file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
 			if (file == null) {
+				if (HttpFileConfig.page404 != null) {
+					HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+					return true;
+				}
 				return false;
 			}
 			if (file.exists() && file.isFile()) {
 				int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
-				HttpLoggingUtils.addLogging(req.host, req, retCode, file.length());
+				HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, file.length());
 				return true;
 			} else {
 				url = req.url.substring(0, req.url.length() - 1);
 				file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
 				if (file == null) {
+					if (HttpFileConfig.page404 != null) {
+						HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+						return true;
+					}
 					return false;
 				}
 				if (file.exists() && file.isFile()) {
 					// try file .../folder/hello for URL .../folder/hello/
 					HttpWorkerUtils.redirect((resp.worker.getServer().isSSLEnabled() ? "https://" : "http://") + req.host + url, req, resp);
-					HttpLoggingUtils.addLogging(req.host, req, 301, 0);
+					HttpLoggingUtils.addLogging(req.host, req, resp, null, 301, 0);
 					return true;
 				}
 			}
@@ -107,6 +127,10 @@ public class StaticResourcePilet implements IPilet {
 				if (dotIndex != -1) {
 					String ext = name.substring(dotIndex + 1);
 					if ("html".equalsIgnoreCase(ext) || "htm".equalsIgnoreCase(ext)) {
+						if (HttpFileConfig.page404 != null) {
+							HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+							return true;
+						}
 						return false; // 404
 					}
 				}
@@ -115,14 +139,22 @@ public class StaticResourcePilet implements IPilet {
 				url = req.url + ".html";
 				file = HttpFileUtils.getFileByURL(serverBase, req.host, url);
 				if (file == null) {
+					if (HttpFileConfig.page404 != null) {
+						HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+						return true;
+					}
 					return false;
 				}
 				if (file.exists() && file.isFile()) {
 					int retCode = HttpFileUtils.serveStaticResource(req, resp, file, 0);
-					HttpLoggingUtils.addLogging(req.host, req, retCode, file.length());
+					HttpLoggingUtils.addLogging(req.host, req, resp, null, retCode, file.length());
 					return true;
 				}
 			}
+		}
+		if (HttpFileConfig.page404 != null) {
+			HttpFileUtils.send404NotFoundWithTemplate(req, resp);
+			return true;
 		}
 		return false;
 	}
